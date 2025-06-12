@@ -20,7 +20,7 @@ Connect Google Ads API directly to Claude Desktop and other MCP clients with OAu
 
 ## ✨ Features
 
-- 🔐 **OAuth 2.0 Authentication** - Secure Google Ads API access
+- 🔐 **Web-Based OAuth Authentication** - Secure Google Ads API access
 - 📊 **GAQL Query Execution** - Run any Google Ads Query Language queries
 - 🏢 **Account Management** - List and manage Google Ads accounts
 - 🔍 **Keyword Research** - Generate keyword ideas with search volume data
@@ -35,6 +35,11 @@ Connect Google Ads API directly to Claude Desktop and other MCP clients with OAu
 | `run_gaql` | Execute GAQL queries | `customer_id`, `query` |
 | `list_accounts` | List accessible Google Ads accounts | None |
 | `run_keyword_planner` | Generate keyword ideas | `customer_id`, `keywords`, `page_url` (optional) |
+| `check_google_ads_token_status` | Check token status | None |
+| `generate_google_ads_token` | Create new tokens | None |
+| `refresh_google_ads_token` | Refresh existing tokens | None |
+| `get_google_ads_oauth_info` | Get OAuth configuration | None |
+| `ensure_google_ads_token` | Smart token management | None |
 
 ## 🚀 Quick Start
 
@@ -53,27 +58,16 @@ cp env.example .env
 # Edit .env with your Google Ads Developer Token
 ```
 
-### 2. Setup OAuth Credentials
+### 2. Web-Based OAuth Authentication
 
-1. **Create Google Cloud Project:**
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Create a new project or select existing
-   - Enable the Google Ads API
+Good news! Our server uses web-based OAuth authentication that handles everything for you:
 
-2. **Create OAuth 2.0 Credentials:**
-   - Go to APIs & Services > Credentials
-   - Click "Create Credentials" > "OAuth 2.0 Client ID"
-   - Choose "Desktop Application"
-   - Set redirect URI to: `https://localhost:3000/api/authorise/google/callback`
-   - Download the credentials JSON file
-   - Save it as `client_secret.json` in your project directory
+- ✅ **No Google Cloud Console setup required**
+- ✅ **No client_secret.json file needed**
+- ✅ **Automatic token management**
+- ✅ **Browser-based authentication**
 
-3. **Get Developer Token:**
-   - Apply for Google Ads Developer Token at [Google Ads Console](https://ads.google.com/)
-   - Add it to your `.env` file:
-   ```bash
-   GOOGLE_ADS_DEVELOPER_TOKEN=your_developer_token_here
-   ```
+Just add your Google Ads Developer Token to the `.env` file and you're ready!
 
 ## 🖥️ Connecting to Claude Desktop
 
@@ -89,11 +83,8 @@ Add this configuration to your Claude Desktop settings:
 {
   "mcpServers": {
     "google-ads": {
-      "command": "python",
-      "args": ["/path/to/your/google-ads-mcp-server/server.py"],
-      "env": {
-        "GOOGLE_ADS_DEVELOPER_TOKEN": "your_developer_token"
-      }
+      "command": "python3",
+      "args": ["/path/to/your/google-ads-mcp-server/server.py"]
     }
   }
 }
@@ -126,7 +117,7 @@ For web deployment or remote access:
 2. **Use Token Tools:** Ask Claude to generate a Google Ads token
 3. **OAuth Flow:** Browser will automatically open for Google authentication
 4. **Grant Permissions:** Allow access to Google Ads API
-5. **Authentication Complete:** Credentials saved in `credentials.json`
+5. **Authentication Complete:** Tokens are automatically retrieved and saved to `credentials.json`
 
 ## 🔧 Configuration
 
@@ -204,89 +195,42 @@ ORDER BY metrics.impressions DESC
 ├── constant/                    # Configuration constants
 │   ├── __init__.py             # Constants exports  
 │   └── constant.py             # API constants
-├── server.py                   # Main FastMCP server (includes token management)
+├── server.py                   # Main FastMCP server with token management
 ├── requirements.txt            # Python dependencies
 ├── .env                       # Environment variables (your developer token)
-├── client_secret.json         # OAuth credentials from Google Cloud Console
-├── client_secret.json.example # Example format for OAuth credentials
 ├── credentials.json           # Auto-generated OAuth tokens (access/refresh)
 └── README.md                  # This file
 ```
 
 ## 🔒 Security & Production
 
-### OAuth Best Practices
+### Best Practices
 
 1. **Secure Credential Storage:**
    ```bash
    # Set proper file permissions
-   chmod 600 ./credentials/client_secret.json
    chmod 600 .env
+   chmod 600 credentials.json
    ```
 
 2. **Environment Variables:**
-   - Never commit `.env` or credential files
+   - Never commit `.env` or credential files to git
    - Use environment variables in production
-   - Rotate tokens regularly
+   - Add credential files to .gitignore
 
 3. **Network Security:**
    - Use HTTPS in production
    - Implement rate limiting
    - Monitor API usage
 
-### Service Account (Production)
-
-For server deployments, use Service Account authentication:
-
-```bash
-# Set auth type to service account
-GOOGLE_ADS_AUTH_TYPE=service_account
-GOOGLE_ADS_CREDENTIALS_PATH=./credentials/service_account.json
-
-# Optional: Impersonation
-GOOGLE_ADS_IMPERSONATION_EMAIL=user@domain.com
-```
-
-## 🧪 Testing
-
-### Test Your Setup
-
-```bash
-# Test OAuth setup
-python -c "from auth import get_credentials; print('✅ OAuth working!' if get_credentials() else '❌ Setup failed')"
-
-# Test MCP server
-fastmcp run server.py --test
-```
-
-### Client Testing
-
-```python
-from fastmcp import Client
-
-async def test_server():
-    async with Client("./server.py") as client:
-        # Test tools
-        tools = await client.list_tools()
-        print(f"Available tools: {[t.name for t in tools]}")
-        
-        # Test account listing
-        result = await client.call_tool("list_accounts", {})
-        print(f"Accounts: {result.text}")
-```
-
 ## 🛠️ Troubleshooting
 
 ### Common Issues
 
-1. **"Authentication failed"**
-   ```bash
-   # Check credentials
-   cat ./credentials/client_secret.json
-   
-   # Verify environment
-   python -c "from constant import GOOGLE_ADS_DEVELOPER_TOKEN; print(GOOGLE_ADS_DEVELOPER_TOKEN)"
-   ```
+1. **"Token generation failed"**
+   - Check your developer token in `.env`
+   - Ensure you have internet access
+   - Try running `check_google_ads_token_status` tool
 
 2. **"Module not found"**
    ```bash
@@ -294,7 +238,7 @@ async def test_server():
    pip install -r requirements.txt
    
    # Check Python path
-   python -c "import fastmcp; print('FastMCP installed')"
+   python3 -c "import fastmcp; print('FastMCP installed')"
    ```
 
 3. **"OAuth browser doesn't open"**
@@ -335,14 +279,6 @@ cd google-ads-mcp-server
 
 # Install development dependencies
 pip install -r requirements.txt
-pip install pytest black isort mypy
-
-# Run tests
-pytest
-
-# Format code
-black .
-isort .
 ```
 
 ## 📄 License
@@ -381,10 +317,9 @@ SOFTWARE.
 
 ## 📞 Support
 
-- **Documentation:** [README_OAUTH.md](README_OAUTH.md) for detailed OAuth setup
-- **Quick Start:** [QUICKSTART.md](QUICKSTART.md) for immediate setup
 - **Issues:** [GitHub Issues](https://github.com/yourusername/google-ads-mcp-server/issues)
 - **Google Ads API:** [Official Documentation](https://developers.google.com/google-ads/api)
+- **Join our Slack:** [AI in Ads](https://join.slack.com/t/ai-in-ads/shared_invite/zt-379x2i0nk-W3VSAh2c6uddFgxxksA2oQ)
 
 ---
 
