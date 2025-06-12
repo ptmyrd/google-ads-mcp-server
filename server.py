@@ -265,194 +265,164 @@ def format_customer_id(customer_id: str) -> str:
 @mcp.tool
 def run_gaql(
     customer_id: str,
-    query: str, 
+    query: str,
     google_access_token: str,
     manager_id: str = ""
 ) -> Dict[str, Any]:
-    """Execute any arbitrary or custom GAQL (Google Ads Query Language) query with custom formatting options.
-    
-    This tool allows you to run any valid GAQL query against the Google Ads API.
-    Always specify the customer_id as a string (even if it looks like a number).
-    This is the most powerful tool for custom Google Ads data queries.
-
-    Args:
-        customer_id: The Google Ads customer ID as a string (10 digits, no dashes)
-        query: The GAQL query to execute (any valid GAQL query)
-        google_access_token: OAuth access token for Google Ads API
-        manager_id: Optional parameter only if the access_type is managed then provide the parent_id as the manager_id
-
-    Returns:
-        Query results in json format
-    """
+    """Execute GAQL using the non-streaming search endpoint for consistent JSON parsing."""
     if not GOOGLE_ADS_DEVELOPER_TOKEN:
         raise ValueError("Google Ads Developer Token is not set in environment variables.")
-    
+
     formatted_customer_id = format_customer_id(customer_id)
-    url = f"https://googleads.googleapis.com/v19/customers/{formatted_customer_id}/googleAds:searchStream"
-    
+    url = (
+        f"https://googleads.googleapis.com/v19/customers/"
+        f"{formatted_customer_id}/googleAds:search"
+    )
     headers = {
         'Authorization': f'Bearer {google_access_token}',
         'developer-token': GOOGLE_ADS_DEVELOPER_TOKEN,
         'Content-Type': 'application/json',
     }
-    
     if manager_id:
         headers['login-customer-id'] = format_customer_id(manager_id)
-    
-    request_body = {
+
+    payload = {'query': query}
+    resp = requests.post(url, headers=headers, json=payload)
+    if not resp.ok:
+        raise Exception(
+            f"Error executing GAQL: {resp.status_code} {resp.reason} - {resp.text}"
+        )
+    data = resp.json()
+    results = data.get('results', [])
+    return {
+        'results': results,
         'query': query,
-        'summaryRowSetting': 'NO_SUMMARY_ROW'
+        'totalRows': len(results),
     }
-    
+
+
+def get_customer_name(
+    customer_id: str,
+    google_access_token: str
+) -> str:
+    """Retrieve descriptive_name for the given customer ID."""
     try:
-        response = requests.post(url, headers=headers, json=request_body)
-        
-        if not response.ok:
-            error_text = response.text
-            raise Exception(f"Error executing request: {response.status_code} {response.reason} - {error_text}")
-        
-        results = response.json()
-        
-        # Process results for better formatting
-        if 'results' not in results or not results['results']:
-            return {"message": "No results found for the query.", "query": query}
-            
-        return {
-            "results": results['results'],
-            "query": query,
-            "totalRows": len(results['results'])
-        }
-        
-    except Exception as e:
-        return {"error": str(e), "query": query}
+        query = "SELECT customer.descriptive_name FROM customer"
+        result = run_gaql(customer_id, query, google_access_token)
+        rows = result.get('results', [])
+        if not rows:
+            return "Name not available (no results)"
+        customer = rows[0].get('customer', {})
+        return customer.get('descriptiveName', "Name not available (missing field)")
+    except Exception:
+        return "Name not available (error)"
 
 
-@mcp.tool  
+def is_manager_account(
+    customer_id: str,
+    google_access_token: str
+) -> bool:
+    """Check if a customer account is a manager (MCC)."""
+    try:
+        query = "SELECT customer.manager FROM customer"
+        result = run_gaql(customer_id, query, google_access_token)
+        rows = result.get('results', [])
+        if not rows:
+            return False
+        return bool(rows[0].get('customer', {}).get('manager', False))
+    except Exception:
+        return False
+
+
+def get_sub_accounts(
+    manager_id: str,
+    google_access_token: str
+) -> List[Dict[str, Any]]:
+    """List sub-accounts under a manager account."""
+    try:
+        query = (
+            "SELECT customer_client.id, customer_client.descriptive_name, "
+            "customer_client.level, customer_client.manager "
+            "FROM customer_client WHERE customer_client.level > 0"
+        )
+        result = run_gaql(manager_id, query, google_access_token)
+        rows = result.get('results', [])
+        subs = []
+        for row in rows:
+            client = row.get('customerClient', {}) or row.get('customer_client', {})
+            cid = format_customer_id(str(client.get('id', '')))
+            subs.append({
+                'id': cid,
+                'name': client.get('descriptiveName', f"Sub-account {cid}"),
+                'access_type': 'managed',
+                'is_manager': bool(client.get('manager', False)),
+                'parent_id': manager_id,
+                'level': int(client.get('level', 0))
+            })
+        return subs
+    except Exception:
+        return []
+
+@mcp.tool
 def list_accounts(
-    google_access_token: str,
+    google_access_token: str
 ) -> Dict[str, Any]:
-    """Lists all accessible Google Ads accounts with their client names.
-
-    This is typically the first command you should run to identify which accounts 
-    you have access to. The returned account IDs and client names can be used in subsequent commands.
-    
-    Args:
-        google_access_token: OAuth access token for Google Ads API
-
-    Returns:
-        List of accessible Google Ads accounts with their details
-    """
+    """List all accessible accounts including nested sub-accounts."""
     if not GOOGLE_ADS_DEVELOPER_TOKEN:
         raise ValueError("Google Ads Developer Token is not set in environment variables.")
-    
+
+    # Fetch top-level accessible customers
     url = "https://googleads.googleapis.com/v19/customers:listAccessibleCustomers"
-    
     headers = {
         'Authorization': f'Bearer {google_access_token}',
         'developer-token': GOOGLE_ADS_DEVELOPER_TOKEN,
         'Content-Type': 'application/json',
     }
-    
-    try:
-        response = requests.get(url, headers=headers)
-        
-        if not response.ok:
-            error_text = response.text
-            raise Exception(f"Error executing request: {response.status_code} {response.reason} - {error_text}")
-        
-        data = response.json()
-        
-        if 'resourceNames' not in data:
-            return {"accounts": [], "message": "No accessible accounts found."}
-        
-        accounts = []
-        for resource_name in data['resourceNames']:
-            # Extract customer ID from resource name (format: customers/XXXXXXXXXX)
-            customer_id = resource_name.split('/')[-1]
-            
-            # Get customer name and manager status
-            customer_name = get_customer_name(customer_id, google_access_token)
-            is_manager = is_manager_account(customer_id, google_access_token)
-            
-            account_data = {
-                'id': format_customer_id(customer_id),
-                'name': customer_name,
-                'access_type': 'direct',
-                'is_manager': is_manager
-            }
-            
-            accounts.append(account_data)
-            
-            # If it's a manager account, get sub-accounts
-            if is_manager:
-                sub_accounts = get_sub_accounts(customer_id, google_access_token)
-                accounts.extend(sub_accounts)
-        
-        return {
-            "accounts": accounts,
-            "total_accounts": len(accounts)
+    resp = requests.get(url, headers=headers)
+    if not resp.ok:
+        raise Exception(
+            f"Error listing accounts: {resp.status_code} {resp.reason} - {resp.text}"
+        )
+    data = resp.json()
+    resource_names = data.get('resourceNames', [])
+    if not resource_names:
+        return {'accounts': [], 'message': 'No accessible accounts found.'}
+
+    accounts = []
+    seen = set()
+    for resource in resource_names:
+        cid = resource.split('/')[-1]
+        fid = format_customer_id(cid)
+        name = get_customer_name(fid, google_access_token)
+        manager = is_manager_account(fid, google_access_token)
+        account = {
+            'id': fid,
+            'name': name,
+            'access_type': 'direct',
+            'is_manager': manager,
+            'level': 0
         }
-        
-    except Exception as e:
-        return {"error": str(e)}
+        accounts.append(account)
+        seen.add(fid)
+        # Include sub-accounts (and nested)
+        if manager:
+            subs = get_sub_accounts(fid, google_access_token)
+            for sub in subs:
+                if sub['id'] not in seen:
+                    accounts.append(sub)
+                    seen.add(sub['id'])
+                    # nested level
+                    if sub['is_manager']:
+                        nested = get_sub_accounts(sub['id'], google_access_token)
+                        for n in nested:
+                            if n['id'] not in seen:
+                                accounts.append(n)
+                                seen.add(n['id'])
 
-
-def get_customer_name(customer_id: str, google_access_token: str) -> str:
-    """Get the customer name for a given account ID."""
-    try:
-        query = "SELECT customer.descriptive_name FROM customer"
-        result = run_gaql(customer_id, query, google_access_token,"")
-        
-        if 'results' in result and result['results']:
-            name = result['results'][0].get('customer', {}).get('descriptiveName', 'Name not available')
-            return name
-        return "Name not available"
-    except:
-        return "Name not available"
-
-
-def is_manager_account(customer_id: str, google_access_token: str) -> bool:
-    """Check if an account is a manager account."""
-    try:
-        query = "SELECT customer.manager FROM customer"
-        result = run_gaql(customer_id, query, google_access_token, "")
-        
-        if 'results' in result and result['results']:
-            return result['results'][0].get('customer', {}).get('manager', False)
-        return False
-    except:
-        return False
-
-
-def get_sub_accounts(manager_id: str, google_access_token: str) -> List[Dict[str, Any]]:
-    """Get sub-accounts for a manager account with detailed information."""
-    try:
-        query = """SELECT customer_client.id, customer_client.descriptive_name, 
-                   customer_client.level, customer_client.manager, customer_client.currency_code, 
-                   customer_client.time_zone FROM customer_client WHERE customer_client.level > 0"""
-        
-        result = run_gaql(manager_id, query, google_access_token, "")
-        
-        if 'results' not in result or not result['results']:
-            return []
-        
-        sub_accounts = []
-        for item in result['results']:
-            client = item.get('customerClient', {})
-            
-            sub_account = {
-                'id': format_customer_id(str(client.get('id', ''))),
-                'name': client.get('descriptiveName', f"Sub-account {client.get('id', '')}"),
-                'access_type': 'managed',
-                'is_manager': client.get('manager', False),
-                'parent_id': manager_id,
-                'level': int(client.get('level', 0))
-            }
-            sub_accounts.append(sub_account)
-        
-        return sub_accounts
-    except:
-        return []
+    return {
+        'accounts': accounts,
+        'total_accounts': len(accounts)
+    }
 
 
 @mcp.tool

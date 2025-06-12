@@ -1,0 +1,6 @@
+access_token = "ya29.a0AW4XtxifDIhdIovne4KZt9DFhhxAegXndqB5Xlfeh9NRVsSpWhsf4xuQEksOgU3X7c_C1sRQkyE_gDncLS3mkrCsFJYKtp_XZbOLGFudMX1JU98AElVowlz9uEKGYFBecYMAI1c-BVnAjUNqKCW71wX1HG2fgnWS08N-WbpNaCgYKAbYSARASFQHGX2MiQ65d12CxviAY9BYN7y-_-g0175"
+
+from server import list_accounts
+
+acc = list_accounts(access_token)
+print(acc)
