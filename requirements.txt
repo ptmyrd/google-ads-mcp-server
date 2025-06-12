@@ -1,0 +1,11 @@
+# FastMCP requirements
+fastmcp
+
+# HTTP requests for API calls
+requests>=2.31.0
+
+# Environment configuration
+python-dotenv>=1.0.0
+
+# Additional dependencies
+typing-extensions>=4.0.0 
