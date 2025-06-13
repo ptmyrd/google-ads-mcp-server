@@ -288,12 +288,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## 🙏 Acknowledgments
-
-- Built with [FastMCP](https://github.com/jlowin/fastmcp) - The fast, Pythonic way to build MCP servers
-- Google Ads API for providing comprehensive advertising data access
-- Model Context Protocol for enabling seamless AI integration
-
 ## 📞 Support
 
 - **Issues:** [GitHub Issues](https://github.com/yourusername/google-ads-mcp-server/issues)
