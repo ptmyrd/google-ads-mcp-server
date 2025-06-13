@@ -261,7 +261,6 @@ def format_customer_id(customer_id: str) -> str:
     """Format customer ID by removing dashes."""
     return customer_id.replace("-", "")
 
-
 @mcp.tool
 def run_gaql(
     customer_id: str,
@@ -300,6 +299,42 @@ def run_gaql(
         'totalRows': len(results),
     }
 
+def execute_gaql(
+    customer_id: str,
+    query: str,
+    google_access_token: str,
+    manager_id: str = ""
+) -> Dict[str, Any]:
+    """Execute GAQL using the non-streaming search endpoint for consistent JSON parsing."""
+    if not GOOGLE_ADS_DEVELOPER_TOKEN:
+        raise ValueError("Google Ads Developer Token is not set in environment variables.")
+
+    formatted_customer_id = format_customer_id(customer_id)
+    url = (
+        f"https://googleads.googleapis.com/v19/customers/"
+        f"{formatted_customer_id}/googleAds:search"
+    )
+    headers = {
+        'Authorization': f'Bearer {google_access_token}',
+        'developer-token': GOOGLE_ADS_DEVELOPER_TOKEN,
+        'Content-Type': 'application/json',
+    }
+    if manager_id:
+        headers['login-customer-id'] = format_customer_id(manager_id)
+
+    payload = {'query': query}
+    resp = requests.post(url, headers=headers, json=payload)
+    if not resp.ok:
+        raise Exception(
+            f"Error executing GAQL: {resp.status_code} {resp.reason} - {resp.text}"
+        )
+    data = resp.json()
+    results = data.get('results', [])
+    return {
+        'results': results,
+        'query': query,
+        'totalRows': len(results),
+    }
 
 def get_customer_name(
     customer_id: str,
@@ -308,7 +343,7 @@ def get_customer_name(
     """Retrieve descriptive_name for the given customer ID."""
     try:
         query = "SELECT customer.descriptive_name FROM customer"
-        result = run_gaql(customer_id, query, google_access_token)
+        result = execute_gaql(customer_id, query, google_access_token)
         rows = result.get('results', [])
         if not rows:
             return "Name not available (no results)"
@@ -325,7 +360,7 @@ def is_manager_account(
     """Check if a customer account is a manager (MCC)."""
     try:
         query = "SELECT customer.manager FROM customer"
-        result = run_gaql(customer_id, query, google_access_token)
+        result = execute_gaql(customer_id, query, google_access_token)
         rows = result.get('results', [])
         if not rows:
             return False
@@ -345,7 +380,7 @@ def get_sub_accounts(
             "customer_client.level, customer_client.manager "
             "FROM customer_client WHERE customer_client.level > 0"
         )
-        result = run_gaql(manager_id, query, google_access_token)
+        result = execute_gaql(manager_id, query, google_access_token)
         rows = result.get('results', [])
         subs = []
         for row in rows:
