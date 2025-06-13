@@ -90,28 +90,7 @@ Add this configuration to your Claude Desktop settings:
 }
 ```
 
-### Method 2: HTTP Transport (Alternative)
-
-For web deployment or remote access:
-
-1. **Start the HTTP server:**
-   ```bash
-   # Modify server.py to use HTTP transport
-   mcp.run(transport="streamable-http", host="127.0.0.1", port=8000, path="/mcp")
-   ```
-
-2. **Claude Desktop config:**
-   ```json
-   {
-     "mcpServers": {
-       "google-ads": {
-         "url": "http://127.0.0.1:8000/mcp"
-       }
-     }
-   }
-   ```
-
-### 3. First Run Authentication
+### 2. First Run Authentication
 
 1. **Start Claude Desktop** with the new configuration
 2. **Use Token Tools:** Ask Claude to generate a Google Ads token
