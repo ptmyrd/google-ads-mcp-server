@@ -38,7 +38,7 @@ class SimpleTokenManager:
         # Use absolute paths to ensure files are found regardless of working directory
         script_dir = Path(__file__).parent.absolute()
         self.credentials_file = script_dir / "credentials.json"
-        self.base_url = "https://reimagine-dev.gomarble.ai/api/authorise/google"
+        self.base_url = "https://localhost:3000/api/authorise/google"       
         self.key = "google"
         
         # Find client secret file - support multiple naming patterns
@@ -118,7 +118,7 @@ class SimpleTokenManager:
         """Generate new access token via web OAuth flow (like TypeScript version)."""
         try:
             # Use the same web-based OAuth flow as the TypeScript version
-            base_url = "https://reimagine-dev.gomarble.ai/api/authorise/google"
+            base_url = "https://localhost:3000/api/authorise/google"
             request_id = str(uuid.uuid4())
             auth_start_url = f"{base_url}/start?request_id={request_id}"
             token_fetch_url = f"{base_url}/get-token?request_id={request_id}"
@@ -175,7 +175,7 @@ class SimpleTokenManager:
     async def _refresh_access_token(self, credentials: Dict[str, Any], refresh_token: str) -> str:
         """Refresh access token using web endpoint (like TypeScript version)."""
         try:
-            base_url = "https://reimagine-dev.gomarble.ai/api/authorise/google"
+            base_url = "https://localhost:3000/api/authorise/google"
             refresh_url = f"{base_url}/refresh-token?refresh_token={refresh_token}"
             
             logger.info("Refreshing access token...")
