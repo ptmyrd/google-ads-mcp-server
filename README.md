@@ -8,6 +8,8 @@
 
 Connect Google Ads API directly to Claude Desktop and other MCP clients with seamless OAuth 2.0 authentication, automatic token refresh, GAQL querying, and keyword research capabilities.
 
+<video controls width="1920" height="512" src="https://github.com/user-attachments/assets/1dc62f47-ace4-4dcf-8009-593ef7194b43">Your browser does not support the video tag.</video>
+
 ## Easy One-Click Setup
 
 For a simpler setup experience, we offer ready-to-use installers:
