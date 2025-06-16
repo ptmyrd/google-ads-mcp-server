@@ -18,6 +18,10 @@ For a simpler setup experience, we offer ready-to-use installers:
 
 👉 **Slack Community -** [AI in Ads](https://join.slack.com/t/ai-in-ads/shared_invite/zt-379x2i0nk-W3VSAh2c6uddFgxxksA2oQ)
 
+## Try Facebook ads mcp server also
+
+👉 **Facebook Ads MCP -** [Facebook Ads MCP](https://github.com/gomarble-ai/facebook-ads-mcp-server)
+
 ## ✨ Features
 
 - 🔐 **Automatic OAuth 2.0** - One-time browser authentication with auto-refresh
