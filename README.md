@@ -180,11 +180,7 @@ Edit the configuration file and add your Google Ads MCP server:
       "command": "/full/path/to/your/project/.venv/bin/python",
       "args": [
         "/full/path/to/your/project/server.py"
-      ],
-      "env": {
-        "GOOGLE_ADS_DEVELOPER_TOKEN": "your_developer_token_here",
-        "GOOGLE_ADS_OAUTH_CONFIG_PATH": "/full/path/to/your/client_secret_file.json"
-      }
+      ]
     }
   }
 }
@@ -198,11 +194,7 @@ Edit the configuration file and add your Google Ads MCP server:
       "command": "/Users/marble-dev-01/workspace/google_ads_with_fastmcp/.venv/bin/python",
       "args": [
         "/Users/marble-dev-01/workspace/google_ads_with_fastmcp/server.py"
-      ],
-      "env": {
-        "GOOGLE_ADS_DEVELOPER_TOKEN": "ABCDEFG1234567890",
-        "GOOGLE_ADS_OAUTH_CONFIG_PATH": "/Users/marble-dev-01/workspace/google_ads_with_fastmcp/client_secret_138737274875-rgsrs15m2eb4bms8btfa86nmlgfno1dt.apps.googleusercontent.com.json"
-      }
+      ]
     }
   }
 }
