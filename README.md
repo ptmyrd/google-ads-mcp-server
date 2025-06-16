@@ -8,6 +8,16 @@
 
 Connect Google Ads API directly to Claude Desktop and other MCP clients with seamless OAuth 2.0 authentication, automatic token refresh, GAQL querying, and keyword research capabilities.
 
+## Easy One-Click Setup
+
+For a simpler setup experience, we offer ready-to-use installers:
+
+👉 **Download installer -** [https://gomarble.ai/mcp](https://gomarble.ai/mcp)
+
+## Join our community for help and updates
+
+👉 **Slack Community -** [AI in Ads](https://join.slack.com/t/ai-in-ads/shared_invite/zt-379x2i0nk-W3VSAh2c6uddFgxxksA2oQ)
+
 ## ✨ Features
 
 - 🔐 **Automatic OAuth 2.0** - One-time browser authentication with auto-refresh
@@ -558,35 +568,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-
-## 🙏 Acknowledgments
-
-- **[FastMCP](https://github.com/jlowin/fastmcp)** - The fast, Pythonic way to build MCP servers
-- **[cohnen/mcp-google-ads](https://github.com/cohnen/mcp-google-ads)** - Inspiration and reference implementation
-- **Google Ads API** - For providing comprehensive advertising data access
-- **Model Context Protocol** - For enabling seamless AI integration
-
-## 📞 Support & Community
-
-- **GitHub Issues:** [Report bugs and feature requests](https://github.com/yourusername/google-ads-mcp-server/issues)
-- **Google Ads API Documentation:** [Official API docs](https://developers.google.com/google-ads/api)
-- **FastMCP Documentation:** [FastMCP GitHub](https://github.com/jlowin/fastmcp)
-- **Model Context Protocol:** [Official MCP documentation](https://modelcontextprotocol.io/)
-
-## 🔄 Version History
-
-### v2.0.0 - Current
-- ✅ **Automatic OAuth 2.0 authentication** with browser flow
-- ✅ **Smart token management** with auto-refresh
-- ✅ **Simplified tool signatures** - no manual token handling
-- ✅ **Enhanced error handling** and recovery
-- ✅ **Comprehensive logging** for debugging
-- ✅ **Production-ready configuration**
-
-### v1.0.0 - Legacy
-- Manual token management
-- Environment variable authentication
-- Basic GAQL support
 
 ## 📈 Roadmap
 
