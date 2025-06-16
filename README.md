@@ -583,12 +583,6 @@ SOFTWARE.
 - 🔍 **Advanced reporting capabilities**
 - 🌐 **Multi-language support**
 
-### Long-term Goals
-- Integration with other Google Marketing Platform APIs
-- Advanced analytics and forecasting
-- Automated bid management capabilities
-- Custom dashboard generation
-
 ---
 
 **Made with ❤️ for the MCP community**
