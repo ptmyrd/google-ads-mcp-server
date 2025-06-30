@@ -1,10 +1,10 @@
 # Environment
 .env
 
-# Credentials and Tokens
-*.json
 
 # Python
 __pycache__/
 *.pyc
 .venv/
+lib/
+google-ads-mcp-server.dxt
