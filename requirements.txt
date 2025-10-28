@@ -1,12 +1,9 @@
 mcp>=1.1.0
-# If your environment uses the third‑party FastMCP, having both is fine:
-fastmcp>=2.3.0
+uvicorn>=0.30.0
+starlette>=0.39.0
 
 requests>=2.31.0
-python-dotenv>=1.0.0
-
 google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
-google-auth-httplib2>=0.1.1
 urllib3>=2.0.0
 typing-extensions>=4.0.0
