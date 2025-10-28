@@ -1,465 +1,329 @@
-from fastmcp import FastMCP, Context
-from typing import Any, Dict, List, Optional
+#!/usr/bin/env python3
 import os
-import logging
+import sys
+import json
+import time
+from typing import List, Optional, Dict, Any
+
+# --- MCP framework (supports either official SDK or FastMCP package) ---
+try:
+    from mcp.server.fastmcp import FastMCP  # official MCP Python SDK
+except Exception:  # pragma: no cover
+    try:
+        from fastmcp import FastMCP  # third-party package, same api surface for our use
+    except Exception as e:  # pragma: no cover
+        raise ImportError(
+            "Install the MCP SDK with `pip install mcp` (or `pip install fastmcp`)."
+        ) from e
+
+# --- Google OAuth ---
 import requests
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
-# Load environment variables FIRST
-from dotenv import load_dotenv
-load_dotenv()
+# ----------------------------
+# Configuration & Environment
+# ----------------------------
+SERVER_NAME = os.environ.get("MCP_SERVER_NAME", "google-ads-mcp")
+API_BASE = os.environ.get("GOOGLE_ADS_API_BASE", "https://googleads.googleapis.com")
+API_VERSION = os.environ.get("GOOGLE_ADS_API_VERSION", "v21")  # recent stable as of 2025
+DEVELOPER_TOKEN = os.environ.get("GOOGLE_ADS_DEVELOPER_TOKEN", "").strip()
 
-# Import OAuth modules after environment is loaded
-from oauth.google_auth import format_customer_id, get_headers_with_auto_token, execute_gaql
+# Paths to secrets mounted as files in Cloud Run
+CLIENT_SECRET_PATH = os.environ.get("GOOGLE_ADS_OAUTH_CONFIG_PATH", "/secrets/client_secret.json")
+TOKEN_JSON_PATH = os.environ.get("GOOGLE_ADS_TOKEN_PATH", "/secrets/google_ads_token.json")
 
-# Get environment variables
-GOOGLE_ADS_DEVELOPER_TOKEN = os.environ.get("GOOGLE_ADS_DEVELOPER_TOKEN")
+# Optional: where to save refreshed token (writable path). If not set, we best-effort write to CWD.
+TOKEN_SAVE_PATH = os.environ.get("GOOGLE_ADS_TOKEN_SAVE_PATH", "./google_ads_token.json")
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('google_ads_server')
+# Basic validation
+if not DEVELOPER_TOKEN:
+    print("ERROR: GOOGLE_ADS_DEVELOPER_TOKEN env var is required.", file=sys.stderr)
 
-mcp = FastMCP("Google Ads Tools")
+mcp = FastMCP(SERVER_NAME)
 
-# Server startup
-logger.info("Starting Google Ads MCP Server...")
+# ------------------------------------------------
+# Helpers: OAuth, headers, simple REST wrappers
+# ------------------------------------------------
+SCOPE = "https://www.googleapis.com/auth/adwords"  # Google Ads API scope
 
-def get_customer_name(customer_id: str) -> str:
-    """Retrieve descriptive_name for the given customer ID."""
+def _load_client_secret() -> Dict[str, Any]:
+    """Load OAuth client (desktop/web) JSON."""
+    with open(CLIENT_SECRET_PATH, "r") as f:
+        data = json.load(f)
+    # Google’s file is usually under 'installed' or 'web'
+    if "installed" in data:
+        cfg = data["installed"]
+    elif "web" in data:
+        cfg = data["web"]
+    else:
+        # raw client json format
+        cfg = data
+    client_id = cfg.get("client_id")
+    client_secret = cfg.get("client_secret")
+    token_uri = cfg.get("token_uri", "https://oauth2.googleapis.com/token")
+    if not client_id or not client_secret:
+        raise RuntimeError("client_id/client_secret missing in client_secret.json")
+    return {"client_id": client_id, "client_secret": client_secret, "token_uri": token_uri}
+
+def _load_refresh_token_json() -> Dict[str, Any]:
+    with open(TOKEN_JSON_PATH, "r") as f:
+        return json.load(f)
+
+def _get_access_token() -> str:
+    """
+    Build Credentials from client secret + refresh token. Refresh if needed.
+    Return a valid access_token string.
+    """
+    client = _load_client_secret()
+    token_info = _load_refresh_token_json()
+
+    refresh_token = token_info.get("refresh_token")
+    if not refresh_token:
+        raise RuntimeError("refresh_token not found in GOOGLE_ADS_TOKEN_JSON")
+
+    creds = Credentials(
+        token=None,  # let the library fetch a fresh access token
+        refresh_token=refresh_token,
+        token_uri=client["token_uri"],
+        client_id=client["client_id"],
+        client_secret=client["client_secret"],
+        scopes=[SCOPE],
+    )
+    request = GoogleAuthRequest()
+    creds.refresh(request)  # guarantees creds.token is valid
+
+    # Best-effort: persist the latest token/expiry to a writable path.
     try:
-        query = "SELECT customer.descriptive_name FROM customer"
-        result = execute_gaql(customer_id, query)
-        rows = result.get('results', [])
-        if not rows:
-            return "Name not available (no results)"
-        customer = rows[0].get('customer', {})
-        return customer.get('descriptiveName', "Name not available (missing field)")
+        persist = {
+            "refresh_token": refresh_token,
+            "token_uri": client["token_uri"],
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "scopes": [SCOPE],
+            "token": creds.token,
+            "expiry": getattr(creds, "expiry", None).isoformat() if getattr(creds, "expiry", None) else None,
+        }
+        with open(TOKEN_SAVE_PATH, "w") as f:
+            json.dump(persist, f)
     except Exception:
-        return "Name not available (error)"
+        # It's okay if we can't write (e.g., read-only FS). We can still operate in-memory.
+        pass
 
-def is_manager_account(customer_id: str) -> bool:
-    """Check if a customer account is a manager (MCC)."""
-    try:
-        query = "SELECT customer.manager FROM customer"
-        result = execute_gaql(customer_id, query)
-        rows = result.get('results', [])
-        if not rows:
-            return False
-        return bool(rows[0].get('customer', {}).get('manager', False))
-    except Exception:
-        return False
+    return creds.token
 
-def get_sub_accounts(manager_id: str) -> List[Dict[str, Any]]:
-    """List sub-accounts under a manager account."""
-    try:
-        query = (
-            "SELECT customer_client.id, customer_client.descriptive_name, "
-            "customer_client.level, customer_client.manager "
-            "FROM customer_client WHERE customer_client.level > 0"
-        )
-        result = execute_gaql(manager_id, query)
-        rows = result.get('results', [])
-        subs = []
-        for row in rows:
-            client = row.get('customerClient', {}) or row.get('customer_client', {})
-            cid = format_customer_id(str(client.get('id', '')))
-            subs.append({
-                'id': cid,
-                'name': client.get('descriptiveName', f"Sub-account {cid}"),
-                'access_type': 'managed',
-                'is_manager': bool(client.get('manager', False)),
-                'parent_id': manager_id,
-                'level': int(client.get('level', 0))
-            })
-        return subs
-    except Exception:
-        return []
+def _ads_headers(access_token: str, login_customer_id: Optional[str] = None) -> Dict[str, str]:
+    """
+    Build Google Ads REST headers.
+    - developer-token is required.
+    - login-customer-id is optional (use if accessing via a manager account).
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "developer-token": DEVELOPER_TOKEN,
+        "Content-Type": "application/json",
+    }
+    if login_customer_id:
+        headers["login-customer-id"] = login_customer_id.replace("-", "")
+    return headers
 
-@mcp.tool
+def _rest_get(url: str, headers: Dict[str, str], params: Optional[Dict[str, Any]] = None) -> Any:
+    r = requests.get(url, headers=headers, params=params, timeout=60)
+    if r.status_code >= 400:
+        raise RuntimeError(f"GET {url} failed: {r.status_code} {r.text}")
+    return r.json()
+
+def _rest_post(url: str, headers: Dict[str, str], body: Dict[str, Any]) -> Any:
+    r = requests.post(url, headers=headers, json=body, timeout=120)
+    if r.status_code >= 400:
+        raise RuntimeError(f"POST {url} failed: {r.status_code} {r.text}")
+    return r.json()
+
+# -------------------------
+# MCP Tools (Google Ads)
+# -------------------------
+
+@mcp.tool()
+def list_accounts(login_customer_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    List Google Ads accounts directly accessible by the authenticated user.
+
+    Returns a list of:
+      { "customer_id": "1234567890", "resource_name": "customers/1234567890", "descriptive_name": "...", "manager": true/false }
+    """
+    if not DEVELOPER_TOKEN:
+        raise RuntimeError("GOOGLE_ADS_DEVELOPER_TOKEN is not set")
+
+    access_token = _get_access_token()
+    headers = _ads_headers(access_token, login_customer_id)
+
+    url = f"{API_BASE}/{API_VERSION}/customers:listAccessibleCustomers"
+    data = _rest_get(url, headers)
+
+    resource_names = data.get("resourceNames", [])
+    results: List[Dict[str, Any]] = []
+
+    # For each account, try to enrich with name/manager via GAQL.
+    for rn in resource_names:
+        # rn is like "customers/1234567890"
+        customer_id = rn.split("/")[-1]
+
+        try:
+            q = "SELECT customer.id, customer.descriptive_name, customer.currency_code, customer.time_zone, customer.manager FROM customer"
+            gaql_url = f"{API_BASE}/{API_VERSION}/customers/{customer_id}/googleAds:search"
+            gaql_resp = _rest_post(gaql_url, headers, {"query": q, "pageSize": 1})
+            descriptive_name = None
+            manager = None
+            if "results" in gaql_resp and gaql_resp["results"]:
+                row = gaql_resp["results"][0]
+                cust = row.get("customer", {})
+                descriptive_name = cust.get("descriptiveName") or cust.get("descriptive_name")
+                manager = cust.get("manager")
+            results.append(
+                {
+                    "customer_id": customer_id,
+                    "resource_name": rn,
+                    "descriptive_name": descriptive_name,
+                    "manager": manager,
+                }
+            )
+        except Exception:
+            # If GAQL enrich fails (permissions, etc.), still return the ID.
+            results.append({"customer_id": customer_id, "resource_name": rn})
+
+    return results
+
+
+@mcp.tool()
 def run_gaql(
     customer_id: str,
     query: str,
-    manager_id: str = "",
-    ctx: Context = None
+    login_customer_id: Optional[str] = None,
+    page_size: int = 1000,
+    max_pages: int = 10,
 ) -> Dict[str, Any]:
-    """Execute GAQL using the non-streaming search endpoint for consistent JSON parsing."""
-    if ctx:
-        ctx.info(f"Executing GAQL query for customer {customer_id}...")
-        ctx.info(f"Query: {query}")
+    """
+    Execute a GAQL query against a specific customer account.
 
-    if not GOOGLE_ADS_DEVELOPER_TOKEN:
-        raise ValueError("Google Ads Developer Token is not set in environment variables.")
+    Args:
+      customer_id: e.g., "1234567890" (no dashes)
+      query: GAQL string, e.g., "SELECT campaign.id, metrics.impressions FROM campaign WHERE segments.date DURING LAST_7_DAYS"
+      login_customer_id: optional manager account to act through
+      page_size: up to 10,000 (Google Ads search uses pagination)
+      max_pages: safety cap to avoid runaway pagination
 
-    try:
-        # This will automatically trigger OAuth flow if needed
-        result = execute_gaql(customer_id, query, manager_id)
-        if ctx:
-            ctx.info(f"GAQL query successful. Found {result['totalRows']} rows.")
-        return result
-    except Exception as e:
-        if ctx:
-            ctx.error(f"GAQL query failed: {str(e)}")
-        raise
+    Returns JSON with 'results' (combined across pages) and 'summary' metadata.
+    """
+    if not DEVELOPER_TOKEN:
+        raise RuntimeError("GOOGLE_ADS_DEVELOPER_TOKEN is not set")
+    if not customer_id or not query:
+        raise RuntimeError("customer_id and query are required")
 
-@mcp.tool
-def list_accounts(ctx: Context = None) -> Dict[str, Any]:
-    """List all accessible accounts including nested sub-accounts."""
-    if ctx:
-        ctx.info("Checking credentials and preparing to list accounts...")
+    access_token = _get_access_token()
+    headers = _ads_headers(access_token, login_customer_id)
 
-    if not GOOGLE_ADS_DEVELOPER_TOKEN:
-        raise ValueError("Google Ads Developer Token is not set in environment variables.")
+    url = f"{API_BASE}/{API_VERSION}/customers/{customer_id}/googleAds:search"
+    all_results: List[Dict[str, Any]] = []
+    page_token = None
+    pages = 0
 
-    try:
-        # This will automatically trigger OAuth flow if needed
-        headers = get_headers_with_auto_token()
-        
-        # Fetch top-level accessible customers
-        url = "https://googleads.googleapis.com/v19/customers:listAccessibleCustomers"
-        resp = requests.get(url, headers=headers)
-        if not resp.ok:
-            if ctx:
-                ctx.error(f"Failed to list accessible accounts: {resp.status_code} {resp.reason}")
-            raise Exception(
-                f"Error listing accounts: {resp.status_code} {resp.reason} - {resp.text}"
-            )
-        data = resp.json()
-        resource_names = data.get('resourceNames', [])
-        if not resource_names:
-            if ctx:
-                ctx.info("No accessible Google Ads accounts found.")
-            return {'accounts': [], 'message': 'No accessible accounts found.'}
+    while pages < max_pages:
+        body = {"query": query, "pageSize": page_size}
+        if page_token:
+            body["pageToken"] = page_token
 
-        if ctx:
-            ctx.info(f"Found {len(resource_names)} top-level accessible accounts. Fetching details...")
+        resp = _rest_post(url, headers, body)
+        all_results.extend(resp.get("results", []))
+        page_token = resp.get("nextPageToken")
+        pages += 1
+        if not page_token:
+            break
 
-        accounts = []
-        seen = set()
-        for resource in resource_names:
-            cid = resource.split('/')[-1]
-            fid = format_customer_id(cid)
-            name = get_customer_name(fid)
-            manager = is_manager_account(fid)
-            account = {
-                'id': fid,
-                'name': name,
-                'access_type': 'direct',
-                'is_manager': manager,
-                'level': 0
-            }
-            accounts.append(account)
-            seen.add(fid)
-            # Include sub-accounts (and nested)
-            if manager:
-                subs = get_sub_accounts(fid)
-                for sub in subs:
-                    if sub['id'] not in seen:
-                        accounts.append(sub)
-                        seen.add(sub['id'])
-                        # nested level
-                        if sub['is_manager']:
-                            nested = get_sub_accounts(sub['id'])
-                            for n in nested:
-                                if n['id'] not in seen:
-                                    accounts.append(n)
-                                    seen.add(n['id'])
+    return {
+        "customer_id": customer_id,
+        "result_count": len(all_results),
+        "results": all_results,
+        "pages": pages,
+    }
 
-        if ctx:
-            ctx.info(f"Finished processing. Found a total of {len(accounts)} accounts.")
 
-        return {
-            'accounts': accounts,
-            'total_accounts': len(accounts)
-        }
-    except Exception as e:
-        if ctx:
-            ctx.error(f"Error listing accounts: {str(e)}")
-        raise
-
-@mcp.tool
+@mcp.tool()
 def run_keyword_planner(
     customer_id: str,
     keywords: List[str],
-    manager_id: str = "",
+    language_id: str = "1000",  # 1000 = English
+    geo_target_constants: Optional[List[str]] = None,  # e.g., ["2840"] for US
     page_url: Optional[str] = None,
-    start_year: Optional[int] = None,
-    start_month: Optional[str] = None,
-    end_year: Optional[int] = None,
-    end_month: Optional[str] = None,
-    ctx: Context = None
+    login_customer_id: Optional[str] = None,
+    include_adult: bool = False,
 ) -> Dict[str, Any]:
-    """Generate keyword ideas using Google Ads KeywordPlanIdeaService.
-
-    This tool allows you to generate keyword ideas based on seed keywords or a page URL. 
-    You can specify targeting parameters such as language, location, and network to refine your keyword suggestions.
+    """
+    Generate keyword ideas (KeywordPlanIdeaService.generateKeywordIdeas).
 
     Args:
-        customer_id: The Google Ads customer ID (10 digits, no dashes)
-        keywords: A list of seed keywords to generate ideas from
-        manager_id: Manager ID if access type is 'managed'
-        page_url: Optional page URL related to your business to generate ideas from
-        start_year: Optional start year for historical data (defaults to previous year)
-        start_month: Optional start month for historical data (defaults to JANUARY)
-        end_year: Optional end year for historical data (defaults to current year)
-        end_month: Optional end month for historical data (defaults to current month)
+      customer_id: Google Ads customer ID where Keyword Planner is invoked.
+      keywords: seed keywords.
+      language_id: numeric ID (e.g., "1000" for English).
+      geo_target_constants: list of numeric geo IDs (e.g., ["2840"] for United States).
+      page_url: optional URL seed.
+      login_customer_id: optional manager account to act through.
+      include_adult: include adult keywords.
 
-    Returns:
-        A list of keyword ideas with associated metrics
-
-    Note:
-        - At least one of 'keywords' or 'page_url' must be provided
-        - Ensure that the 'customer_id' is formatted as a string, even if it appears numeric
-        - Valid months: JANUARY, FEBRUARY, MARCH, APRIL, MAY, JUNE, JULY, AUGUST, SEPTEMBER, OCTOBER, NOVEMBER, DECEMBER
+    Returns a simplified list of {text, avgMonthlySearches, competition, lowTopOfPageBidMicros, highTopOfPageBidMicros}
     """
-    if ctx:
-        ctx.info(f"Generating keyword ideas for customer {customer_id}...")
-        if keywords:
-            ctx.info(f"Seed keywords: {', '.join(keywords)}")
-        if page_url:
-            ctx.info(f"Page URL: {page_url}")
+    if not DEVELOPER_TOKEN:
+        raise RuntimeError("GOOGLE_ADS_DEVELOPER_TOKEN is not set")
+    if not customer_id or not keywords:
+        raise RuntimeError("customer_id and keywords are required")
 
-    if not GOOGLE_ADS_DEVELOPER_TOKEN:
-        raise ValueError("Google Ads Developer Token is not set in environment variables.")
-    
-    # Validate that at least one of keywords or page_url is provided
-    if (not keywords or len(keywords) == 0) and not page_url:
-        raise ValueError("At least one of keywords or page URL is required, but neither was specified.")
-    
-    try:
-        # This will automatically trigger OAuth flow if needed
-        headers = get_headers_with_auto_token()
-        
-        formatted_customer_id = format_customer_id(customer_id)
-        url = f"https://googleads.googleapis.com/v19/customers/{formatted_customer_id}:generateKeywordIdeas"
-        
-        if manager_id:
-            headers['login-customer-id'] = format_customer_id(manager_id)
-        
-        # Set up dynamic date range with user-provided values or smart defaults
-        from datetime import datetime
-        current_date = datetime.now()
-        current_year = current_date.year
-        current_month = current_date.strftime('%B').upper()
-        
-        valid_months = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE',
-                        'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER']
-        
-        # Use provided dates or fall back to defaults
-        start_year_final = start_year or (current_year - 1)
-        start_month_final = start_month.upper() if start_month and start_month.upper() in valid_months else 'JANUARY'
-        end_year_final = end_year or current_year
-        end_month_final = end_month.upper() if end_month and end_month.upper() in valid_months else current_month
-        
-        # Build the request body according to Google Ads API specification
-        request_body = {
-            'language': 'languageConstants/1000',
-            'geoTargetConstants': ['geoTargetConstants/2840'],
-            'keywordPlanNetwork': 'GOOGLE_SEARCH_AND_PARTNERS',
-            'includeAdultKeywords': False,
-            'pageSize': 25,
-            'historicalMetricsOptions': {
-                'yearMonthRange': {
-                    'start': {
-                        'year': start_year_final,
-                        'month': start_month_final
-                    },
-                    'end': {
-                        'year': end_year_final,
-                        'month': end_month_final
-                    }
-                }
+    access_token = _get_access_token()
+    headers = _ads_headers(access_token, login_customer_id)
+
+    # REST path: POST /vXX/customers:generateKeywordIdeas
+    url = f"{API_BASE}/{API_VERSION}/customers:generateKeywordIdeas"
+
+    body: Dict[str, Any] = {
+        "customerId": customer_id,
+        "language": f"languageConstants/{language_id}",
+        "includeAdultKeywords": include_adult,
+    }
+
+    if geo_target_constants:
+        body["geoTargetConstants"] = [f"geoTargetConstants/{g}" for g in geo_target_constants]
+
+    # Use keywordSeed and/or urlSeed per docs.
+    if keywords:
+        body["keywordSeed"] = {"keywords": keywords}
+    if page_url:
+        body["urlSeed"] = {"url": page_url}
+
+    resp = _rest_post(url, headers, body)
+    ideas = []
+    for item in resp.get("results", []):
+        txt = item.get("text")
+        metrics = item.get("keywordIdeaMetrics", {})
+        ideas.append(
+            {
+                "text": txt,
+                "avgMonthlySearches": metrics.get("avgMonthlySearches"),
+                "competition": metrics.get("competition"),
+                "lowTopOfPageBidMicros": metrics.get("lowTopOfPageBidMicros"),
+                "highTopOfPageBidMicros": metrics.get("highTopOfPageBidMicros"),
             }
-        }
-        
-        # Set the appropriate seed based on what's provided
-        if (not keywords or len(keywords) == 0) and page_url:
-            request_body['urlSeed'] = {'url': page_url}
-        elif keywords and len(keywords) > 0 and not page_url:
-            request_body['keywordSeed'] = {'keywords': keywords}
-        elif keywords and len(keywords) > 0 and page_url:
-            request_body['keywordAndUrlSeed'] = {
-                'url': page_url,
-                'keywords': keywords
-            }
-        
-        response = requests.post(url, headers=headers, json=request_body)
-        
-        if not response.ok:
-            error_text = response.text
-            if ctx:
-                ctx.error(f"Keyword planner request failed: {response.status_code} {response.reason}")
-            raise Exception(f"Error executing request: {response.status_code} {response.reason} - {error_text}")
-        
-        results = response.json()
-        
-        if 'results' not in results or not results['results']:
-            message = f"No keyword ideas found for the provided inputs.\n\nKeywords: {', '.join(keywords) if keywords else 'None'}\nPage URL: {page_url or 'None'}\nAccount: {formatted_customer_id}"
-            if ctx:
-                ctx.info(message)
-            return {
-                "message": message,
-                "keywords": keywords or [],
-                "page_url": page_url,
-                "date_range": f"{start_month_final} {start_year_final} to {end_month_final} {end_year_final}"
-            }
-        
-        # Format the results for better readability
-        formatted_results = []
-        for result in results['results']:
-            keyword_idea = result.get('keywordIdeaMetrics', {})
-            keyword_text = result.get('text', 'N/A')
-            
-            formatted_result = {
-                'keyword': keyword_text,
-                'avg_monthly_searches': keyword_idea.get('avgMonthlySearches', 'N/A'),
-                'competition': keyword_idea.get('competition', 'N/A'),
-                'competition_index': keyword_idea.get('competitionIndex', 'N/A'),
-                'low_top_of_page_bid_micros': keyword_idea.get('lowTopOfPageBidMicros', 'N/A'),
-                'high_top_of_page_bid_micros': keyword_idea.get('highTopOfPageBidMicros', 'N/A')
-            }
-            formatted_results.append(formatted_result)
-        
-        if ctx:
-            ctx.info(f"Found {len(formatted_results)} keyword ideas.")
-        
-        return {
-            "keyword_ideas": formatted_results,
-            "total_ideas": len(formatted_results),
-            "input_keywords": keywords or [],
-            "input_page_url": page_url,
-            "date_range": f"{start_month_final} {start_year_final} to {end_month_final} {end_year_final}"
-        }
-        
-    except Exception as e:
-        if ctx:
-            ctx.error(f"An unexpected error occurred: {e}")
-        raise
+        )
 
-@mcp.resource("gaql://reference")
-def gaql_reference() -> str:
-    """Google Ads Query Language (GAQL) reference documentation."""
-    return """Schema Format:    
-                ## Basic Query Structure
-                '''
-                SELECT field1, field2, ... 
-                FROM resource_type
-                WHERE condition
-                ORDER BY field [ASC|DESC]
-                LIMIT n
-                '''
+    return {"customer_id": customer_id, "count": len(ideas), "ideas": ideas}
 
-                ## Common Field Types
 
-                ### Resource Fields
-                - campaign.id, campaign.name, campaign.status
-                - ad_group.id, ad_group.name, ad_group.status
-                - ad_group_ad.ad.id, ad_group_ad.ad.final_urls
-                - ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type (for keyword_view)
-
-                ### Metric Fields
-                - metrics.impressions
-                - metrics.clicks
-                - metrics.cost_micros
-                - metrics.conversions
-                - metrics.conversions_value (direct conversion revenue - primary revenue metric)
-                - metrics.ctr
-                - metrics.average_cpc
-
-                ### Segment Fields
-                - segments.date
-                - segments.device
-                - segments.day_of_week
-
-                ## Common WHERE Clauses
-
-                ### Date Ranges
-                - WHERE segments.date DURING LAST_7_DAYS
-                - WHERE segments.date DURING LAST_30_DAYS
-                - WHERE segments.date BETWEEN '2023-01-01' AND '2023-01-31'
-
-                ### Filtering
-                - WHERE campaign.status = 'ENABLED'
-                - WHERE metrics.clicks > 100
-                - WHERE campaign.name LIKE '%Brand%'
-                - Use LIKE '%keyword%' instead of CONTAINS 'keyword' (CONTAINS not supported)
-
-                EXAMPLE QUERIES:
-
-                1. Basic campaign metrics:
-                SELECT 
-                campaign.id,
-                campaign.name, 
-                metrics.clicks, 
-                metrics.impressions,
-                metrics.cost_micros
-                FROM campaign 
-                WHERE segments.date DURING LAST_7_DAYS
-
-                2. Ad group performance:
-                SELECT 
-                campaign.id,
-                ad_group.name, 
-                metrics.conversions, 
-                metrics.cost_micros,
-                campaign.name
-                FROM ad_group 
-                WHERE metrics.clicks > 100
-
-                3. Keyword analysis (CORRECT field names):
-                SELECT 
-                campaign.id,
-                ad_group_criterion.keyword.text, 
-                ad_group_criterion.keyword.match_type,
-                metrics.average_position, 
-                metrics.ctr
-                FROM keyword_view 
-                WHERE segments.date DURING LAST_30_DAYS
-                ORDER BY metrics.impressions DESC
-
-                4. Get conversion data with revenue:
-                SELECT
-                campaign.id,
-                campaign.name,
-                metrics.conversions,
-                metrics.conversions_value,
-                metrics.all_conversions_value,
-                metrics.cost_micros
-                FROM campaign
-                WHERE segments.date DURING LAST_30_DAYS
-
-                IMPORTANT NOTES & COMMON ERRORS TO AVOID:
-
-                ### Field Errors to Avoid:
-                WRONG: campaign.campaign_budget.amount_micros
-                CORRECT: campaign_budget.amount_micros (query from campaign_budget resource)
-
-                WRONG: keyword.text, keyword.match_type  
-                CORRECT: ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type
-
-                ### Required Fields:
-                - Always include campaign.id when querying ad_group, keyword_view, or other campaign-related resources
-                - Some resources require specific reference fields in SELECT clause
-
-                ### Revenue Metrics:
-                - metrics.conversions_value = Direct conversion revenue (use for ROI calculations)
-                - metrics.all_conversions_value = Total attributed revenue (includes view-through)
-
-                ### String Matching:
-                - Use LIKE '%keyword%' not CONTAINS 'keyword'
-                - GAQL does not support CONTAINS operator
-
-                NOTE:
-                - Date ranges must be finite: LAST_7_DAYS, LAST_30_DAYS, or BETWEEN dates
-                - Cannot use open-ended ranges like >= '2023-01-31'
-                - Always include campaign.id when error messages request it."""
-
+# ---------------------------------------
+# Entrypoint: Streamable HTTP `/mcp`
+# ---------------------------------------
 if __name__ == "__main__":
-    import sys
-    
-    # Check command line arguments for transport mode
-    if "--http" in sys.argv:
-        logger.info("Starting with HTTP transport on http://127.0.0.1:8000/mcp")
-        mcp.run(transport="streamable-http", host="127.0.0.1", port=8000, path="/mcp")
-    else:
-        # Default to STDIO for Claude Desktop compatibility
-        logger.info("Starting with STDIO transport for Claude Desktop")
-        mcp.run(transport="stdio")
+    # Cloud Run contract: listen on 0.0.0.0:$PORT
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8080"))
+
+    # Run a single-path MCP endpoint at /mcp (Agent‑Builder expects this shape).
+    # See MCP SDK docs for Streamable HTTP servers. 
+    # (If you ever mount behind a base path, keep exact `/mcp` to avoid /mcp vs /mcp/ 404s.)
+    mcp.run(transport="streamable-http", host=host, port=port, path="/mcp")
