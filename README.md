@@ -582,3 +582,7 @@ SOFTWARE.
 **Made with ❤️ for the MCP community**
 
 *Connect your Google Ads data directly to AI assistants and unlock powerful advertising insights through natural language conversations.*
+
+
+
+
